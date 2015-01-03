@@ -1,5 +1,6 @@
 from enum import Enum
 from McuCommand import *
+from WriteHandle import PacketSize
 import struct
 
 
@@ -22,9 +23,11 @@ class Tr(Enum):
 class ReadFSM(object):
     transitions = {
         (St.Read1, Tr.Read): St.Wait1,
+        (St.Read1, Tr.TimeOut): St.Read2,
         (St.Wait1, Tr.TimeOut): St.Read2,
         (St.Wait1, Tr.Received): St.Finish,
         (St.Read2, Tr.Read): St.Wait2,
+        (St.Read2, Tr.TimeOut): St.Finish,
         (St.Wait2, Tr.TimeOut): St.Fail,
         (St.Wait2, Tr.Received): St.Finish,
         (St.Fail, Tr.Stop): St.Finish,
@@ -34,7 +37,7 @@ class ReadFSM(object):
         print("read offset: {0}".format(self.offSet))
         command = [0x10, 0x06]
         address = [x for x in struct.pack('i', self.offSet)[::-1]]
-        self.comm.send_command(command + address)
+        return self.comm.send_command(command + address + [PacketSize])
 
     def do(self, transition):
         key = (self.currentState, transition)
@@ -46,8 +49,11 @@ class ReadFSM(object):
 
     def read1_state(self):
         print("read1")
-        self.perform_read()
-        self.do(Tr.Read)
+        if self.perform_read():
+            self.do(Tr.Read)
+        else:
+            self.time_out = True
+            self.do(Tr.TimeOut)
 
     def wait1_state(self):
         print("WaitRead1")
@@ -67,8 +73,11 @@ class ReadFSM(object):
 
     def read2_state(self):
         print("Read2")
-        self.perform_read()
-        self.do(Tr.Read)
+        if self.perform_read():
+            self.do(Tr.Read)
+        else:
+            self.time_out = True
+            self.do(Tr.TimeOut)
 
     def fail_state(self):
         print("ReadFail")

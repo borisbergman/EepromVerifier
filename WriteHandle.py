@@ -25,9 +25,11 @@ class WriteFSM(object):
 
     transitions = {
         (St.Write1, Tr.Read): St.Wait1,
+        (St.Write1, Tr.TimeOut): St.Write2,
         (St.Wait1, Tr.TimeOut): St.Write2,
         (St.Wait1, Tr.Received): St.Finish,
         (St.Write2, Tr.Read): St.Wait2,
+        (St.Write2, Tr.TimeOut): St.Finish,
         (St.Wait2, Tr.TimeOut): St.Fail,
         (St.Wait2, Tr.Received): St.Finish,
         (St.Fail, Tr.Stop): St.Finish,
@@ -37,7 +39,7 @@ class WriteFSM(object):
         print("write offset: {0}".format(self.offSet))
         command = [0x10, 0x0E]
         address = [x for x in struct.pack('i', self.offSet)[::-1]]
-        self.comm.send_command(command + address + self.data)
+        return self.comm.send_command(command + address + self.data)
 
     def do(self, transition):
         key = (self.currentState, transition)
@@ -49,13 +51,19 @@ class WriteFSM(object):
 
     def write1_state(self):
         print("read1")
-        self.perform_write()
-        self.do(Tr.Read)
+        if self.perform_write():
+            self.do(Tr.Read)
+        else:
+            self.time_out = True
+            self.do(Tr.TimeOut)
 
     def write2_state(self):
         print("Read2")
-        self.perform_write()
-        self.do(Tr.Read)
+        if self.perform_write():
+            self.do(Tr.Read)
+        else:
+            self.time_out = True
+            self.do(Tr.TimeOut)
 
     def wait1_state(self):
         print("WaitRead1")

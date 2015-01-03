@@ -3,10 +3,18 @@ from McuCommand import *
 from ReadHandle import ReadFSM
 from WriteHandle import WriteFSM
 from WriteHandle import PacketSize
+import logging
 
 import sys
 import struct
 import time
+
+FORMAT = '%(asctime)-15s %(clientip)s %(user)-8s %(message)s'
+logging.basicConfig(format=FORMAT)
+
+d = {'clientip': '192.168.0.1', 'user': 'fbloggs'}
+logger = logging.getLogger('tcpserver')
+logger.warning('Protocol problem: %s', 'connection reset', extra=d)
 
 
 class St(Enum):
@@ -41,15 +49,14 @@ class VerifyFSM(object):
         self.readData = []
         self.com = None
 
-
-
     transitions = {
         (St.Initial, Tr.SendInstall): St.InstallMode,
+        (St.Initial, Tr.TimeOut): St.Finish,
         (St.InstallMode, Tr.SendPassword): St.PasswordMode,
         (St.InstallMode, Tr.TimeOut): St.Finish,
         (St.PasswordMode, Tr.TimeOut): St.Finish,
         (St.PasswordMode, Tr.Read): St.Run,
-        (St.Run, Tr.Read) : St.Read,
+        (St.Run, Tr.Read): St.Read,
         (St.Run, Tr.QueueEmpty): St.Finish,
         (St.Read, Tr.TimeOut): St.Finish,
         (St.Read, Tr.Write): St.Written,
@@ -72,11 +79,11 @@ class VerifyFSM(object):
 
     def enter_installation(self):
         command = [0x1B, 0x01]
-        self.com.send_command(command)
+        return self.com.send_command(command)
 
     def send_password(self):
         command = [0x14, 0x01, 0x35, 0x37, 0x39, 0x41, 0x43, 0x45]
-        self.com.send_command(command)
+        return self.com.send_command(command)
 
     def finish_state(self):
         print('FinishState')
@@ -84,17 +91,32 @@ class VerifyFSM(object):
 
     def initialize_state(self):
         print('initiate state')
-        x = input("StartOnSerialPort")
-        self.com = Comm(int(x))
-        self.enter_installation()
-        self.do(Tr.SendInstall)
+        x = 0
+        while x < 1:
+            try:
+                inp = input("StartOnSerialPort")
+                x = int(inp) - 1
+            except ValueError:
+                print("please enter a port number")
+        try:
+            self.com = Comm(x)
+        except Exception as error:
+            print(error)
+            self.do(Tr.TimeOut)
+            return
+        if self.enter_installation():
+            self.do(Tr.SendInstall)
+        else:
+            self.do(Tr.TimeOut)
 
     def install_mode_state(self):
         print('install_mode')
         if self.com.receive_data():
             time.sleep(5)
-            self.send_password()
-            self.do(Tr.SendPassword)
+            if self.send_password():
+                self.do(Tr.SendPassword)
+            else:
+                self.do(Tr.TimeOut)
         else:
             print("install mode fail")
             self.do(Tr.TimeOut)
@@ -110,6 +132,7 @@ class VerifyFSM(object):
     def run_state(self):
         print("run")
         if self.times * PacketSize >= 2 ** 17:
+            print("test succeed")
             self.do(Tr.QueueEmpty)
             return
         read = ReadFSM(self.com, self.times * PacketSize)
@@ -140,18 +163,18 @@ class VerifyFSM(object):
         if read.time_out:
             self.do(Tr.TimeOut)
         else:
-            #verify
-            if data == read.receivedData:
+            # verify
+            if data == read.receivedData[5:-1]:
                 self.do(Tr.Read)
             else:
-                print("Data offset {0} received {1} instead of {2}".format(
-                    str(self.times*PacketSize),
-                    str(read.receivedData), str(data)))
+                print("Data offset: {0} received: {1}".format(
+                    str(self.times * PacketSize),
+                    str(to_hex(read.receivedData[5:-1]))))
                 self.do(Tr.VerifyFail)
 
     def verified_state(self):
         print("verified")
-        #write back original
+        # write back original
         write = WriteFSM(self.com, self.times * PacketSize, self.readData)
         write.run()
         if write.time_out:

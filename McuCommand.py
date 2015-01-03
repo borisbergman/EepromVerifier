@@ -17,21 +17,32 @@ def to_hex(intarray):
 class Comm(object):
     received_bytes = []
 
-    def __init__(self, port):
-        self.ser = serial.Serial(port, 38400, timeout=10, writeTimeout=10)
+    def __init__(self, port=10, timeout=4):
+        self.timeout = timeout
+        self.unitId = 0
+        try:
+            self.ser = serial.Serial(port, 38400, timeout=timeout, writeTimeout=timeout)
+        except serial.SerialException:
+            raise Exception("could not initialize port")
 
     def send_command(self, command):
         # source
         command.insert(0, 0x81)
-        # destination master
-        command.insert(1, 0x01)
+        # destination last packet received from
+        command.insert(1, self.unitId)
         #amount
         command.insert(2, len(command) + 2)
-        #checksum
-        command.append(checksum(command))
 
         #print("writing:{0}".format(str(to_hex(command))))
-        self.ser.write(command)
+        try:
+            self.ser.write(command + [checksum(command)])
+            return True
+        except serial.SerialException:
+            print("timeout after {0}s".format(str(self.timeout)))
+            return False
+        #except serial.SerialTimeoutException:
+        #    print("timeout after {0}s".format(str(self.timeout)))
+        #    return False
 
     def receive_data(self):
         res = self.ser.read(4)
@@ -51,7 +62,7 @@ class Comm(object):
         self.received_bytes += res
 
         if len(self.received_bytes) != expected_amount:
-            print("incorrect amount expected: s%s actual s%s" %
+            print("incorrect amount expected: %s actual %s" %
                   (str(expected_amount), str(len(self.received_bytes))))
             return False
 
@@ -61,4 +72,6 @@ class Comm(object):
                 str(checksum(self.received_bytes[:-1]))))
             return False
 
+        self.unitId = self.received_bytes[0]
+        #print("received set {0}", to_hex(self.received_bytes))
         return True
