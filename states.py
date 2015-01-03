@@ -1,150 +1,66 @@
 from enum import Enum
 from McuCommand import *
+from ReadHandle import ReadFSM
+from WriteHandle import WriteFSM
+from WriteHandle import PacketSize
+
 import sys
 import struct
+import time
 
 
 class St(Enum):
-    Initiate = 0
-    AwaitInstall = 1
-    AwaitPw = 2
-    Run = 3
-    Run2 = 4
-    Wait = 5
-    Wait2 = 6
-    Finish = 7
+    Initial = 0
+    InstallMode = 1
+    PasswordMode = 2
+    Read = 3
+    Run = 4
+    Written = 5
+    Verified = 6
+
+    WriteOriginal = 8
+    Finish = 9
 
 
 class Tr(Enum):
     SendInstall = 0
-    TimeOut = 1
-    SendPw = 2
-    PasswordOk = 3
-    QueueEmpty = 4
-    Send = 5
-    Received = 6
+    SendPassword = 1
+    TimeOut = 2
+    Read = 3
+    Write = 4
+    QueueEmpty = 5
+    VerifyFail = 6
 
 
-class State(object):
-    def execute(self):
-        pass
-
-
-class FinishState(State):
-    def execute(self):
-        print('FinishState')
-        sys.exit(0)
-
-
-class InitiateState(State):
-    def execute(self):
-        print('initiate state')
-        enter_installation()
-        sm.do(Tr.SendInstall)
-
-
-class Wait2State(State):
-    def execute(self):
-        pass
-
-
-class Run2State(State):
-    def execute(self):
-        print("run2State")
-        send_eeprom()
-        sm.do(Tr.Send)
-
-
-class WaitInstallState(State):
-    def execute(self):
-        print('waitInstall')
-        if receive_data():
-            send_password()
-            sm.do(Tr.SendPw)
-        else:
-            sm.do(Tr.TimeOut)
-
-
-class AwaitPWState(State):
-    def execute(self):
-        print("awPassword")
-        if receive_data():
-            sm.do(Tr.PasswordOk)
-        else:
-            sm.do(Tr.TimeOut)
-
-
-class RunState(State):
-    def execute(self):
-        print("RunState")
-        reset_timer()
-        if send_eeprom():
-            sm.do(Tr.Send)
-        else:
-            print("done")
-            sm.do(Tr.QueueEmpty)
-
-
-class WaitState(State):
-    def execute(self):
-        print("WaitState")
-        reset_timer()
-        if receive_data():
-            sm.do(Tr.Received)
-        else:
-            print("wrong data")
-            sm.do(Tr.TimeOut)
-
-
-class Send2State(State):
-    def execute(self):
-        print("Send2State")
-        reset_timer()
-        send_eeprom()
-
-
-class Wait2State(State):
-    def execute(self):
-        print("Wait2State")
-        reset_timer()
-        if receive_data():
-            sm.do(Tr.Received)
-        else:
-            print("wrong data 2")
-            sm.do(Tr.TimeOut)
-        print("Wait2")
-
-
-class StateMachine(object):
-    transitions = {
-        (St.Initiate, Tr.SendInstall): St.AwaitInstall,
-        (St.AwaitInstall, Tr.TimeOut): St.Finish,
-        (St.AwaitInstall, Tr.SendPw): St.AwaitPw,
-        (St.AwaitPw, Tr.TimeOut): St.Finish,
-        (St.AwaitPw, Tr.PasswordOk): St.Run,
-        (St.Run, Tr.Send): St.Wait,
-        (St.Run, Tr.QueueEmpty): St.Finish,
-        (St.Wait, Tr.Received): St.Run,
-        (St.Wait, Tr.TimeOut): St.Run2,
-        (St.Run2, Tr.Send): St.Wait2,
-        (St.Run2, Tr.TimeOut): St.Finish,
-        (St.Wait2, Tr.Received): St.Run,
-        (St.Wait2, Tr.TimeOut): St.Finish,
-    }
-
-    states = {
-        St.Initiate: InitiateState(),
-        St.AwaitInstall: WaitInstallState(),
-        St.AwaitPw: AwaitPWState(),
-        St.Run: RunState(),
-        St.Wait: WaitState(),
-        St.Run2: Run2State(),
-        St.Wait2: Wait2State(),
-        St.Finish: FinishState(),
-    }
+class VerifyFSM(object):
+    packet_size = 64
 
     def __init__(self):
-        self.currentState = St.Initiate
+        self.times = 0
+        self.currentState = St.Initial
+        self.readData = []
+        self.com = None
+
+
+
+    transitions = {
+        (St.Initial, Tr.SendInstall): St.InstallMode,
+        (St.InstallMode, Tr.SendPassword): St.PasswordMode,
+        (St.InstallMode, Tr.TimeOut): St.Finish,
+        (St.PasswordMode, Tr.TimeOut): St.Finish,
+        (St.PasswordMode, Tr.Read): St.Run,
+        (St.Run, Tr.Read) : St.Read,
+        (St.Run, Tr.QueueEmpty): St.Finish,
+        (St.Read, Tr.TimeOut): St.Finish,
+        (St.Read, Tr.Write): St.Written,
+        (St.Written, Tr.Read): St.Verified,
+        (St.Written, Tr.TimeOut): St.Finish,
+        (St.Written, Tr.VerifyFail): St.Finish,
+        (St.Verified, Tr.TimeOut): St.Finish,
+        (St.Verified, Tr.Write): St.Run,
+        (St.Verified, Tr.TimeOut): St.Finish,
+
+    }
 
     def do(self, transition):
         key = (self.currentState, transition)
@@ -153,51 +69,116 @@ class StateMachine(object):
         else:
             print("transition {0} not found for state {1}"
                   .format(str(transition), str(self.currentState)))
+
+    def enter_installation(self):
+        command = [0x1B, 0x01]
+        self.com.send_command(command)
+
+    def send_password(self):
+        command = [0x14, 0x01, 0x35, 0x37, 0x39, 0x41, 0x43, 0x45]
+        self.com.send_command(command)
+
+    def finish_state(self):
+        print('FinishState')
+        sys.exit(0)
+
+    def initialize_state(self):
+        print('initiate state')
+        x = input("StartOnSerialPort")
+        self.com = Comm(int(x))
+        self.enter_installation()
+        self.do(Tr.SendInstall)
+
+    def install_mode_state(self):
+        print('install_mode')
+        if self.com.receive_data():
+            time.sleep(5)
+            self.send_password()
+            self.do(Tr.SendPassword)
+        else:
+            print("install mode fail")
+            self.do(Tr.TimeOut)
+
+    def password_mode_state(self):
+        print("password_mode")
+        if self.com.receive_data():
+            self.do(Tr.Read)
+        else:
+            print("password fail")
+            self.do(Tr.TimeOut)
+
+    def run_state(self):
+        print("run")
+        if self.times * PacketSize >= 2 ** 17:
+            self.do(Tr.QueueEmpty)
+            return
+        read = ReadFSM(self.com, self.times * PacketSize)
+        read.run()
+        if read.time_out:
+            print("Timed out offset {0}".format(str(self.times * PacketSize)))
+            self.do(Tr.TimeOut)
+        else:
+            self.readData = read.receivedData
+            self.do(Tr.Read)
+
+    def read_state(self):
+        print("read")
+        data = [0x83 for x in range(PacketSize)]
+        write = WriteFSM(self.com, self.times * PacketSize, data)
+        write.run()
+        if write.time_out:
+            print("Timed out offset {0}".format(str(self.times * PacketSize)))
+            self.do(Tr.TimeOut)
+        else:
+            self.do(Tr.Write)
+
+    def written_state(self):
+        print("written")
+        read = ReadFSM(self.com, self.times * PacketSize)
+        data = [0x83 for x in range(PacketSize)]
+        read.run()
+        if read.time_out:
+            self.do(Tr.TimeOut)
+        else:
+            #verify
+            if data == read.receivedData:
+                self.do(Tr.Read)
+            else:
+                print("Data offset {0} received {1} instead of {2}".format(
+                    str(self.times*PacketSize),
+                    str(read.receivedData), str(data)))
+                self.do(Tr.VerifyFail)
+
+    def verified_state(self):
+        print("verified")
+        #write back original
+        write = WriteFSM(self.com, self.times * PacketSize, self.readData)
+        write.run()
+        if write.time_out:
+            print("Timed out offset {0}".format(str(self.times * PacketSize)))
+            self.do(Tr.TimeOut)
+        else:
+            self.do(Tr.Write)
+        self.times += 1
+
+    states = {
+        St.Initial: initialize_state,
+        St.InstallMode: install_mode_state,
+        St.PasswordMode: password_mode_state,
+        St.Run: run_state,
+        St.Read: read_state,
+        St.Written: written_state,
+        St.Verified: verified_state,
+        St.Finish: finish_state,
+    }
+
     def next(self):
-        self.states[self.currentState].execute()
+        self.states[self.currentState](self)
+
+    def run(self):
+        while self.currentState != St.Finish:
+            self.next()
 
 
-sm = StateMachine()
-
-
-def enter_installation():
-    x = input("StartOnSerialPort")
-    initialize_port(int(x))
-    command = [0x1B, 0x01]
-    send_command(command)
-
-
-def send_password():
-    command = [0x14, 0x01, 0x35, 0x37, 0x39, 0x41, 0x43, 0x45]
-    send_command(command)
-
-
-times = 0
-packet_size = 64
-
-
-def send_eeprom():
-    global times
-
-    if times * packet_size >= 2 ** 17:
-        return False
-    print("write offset: {offset:}".format(str(times * packet_size)))
-    command = [0x10, 0x0E]
-    address = [x for x in struct.pack('i', times * packet_size)[::-1]]
-    data = [0x83 for x in range(packet_size)]
-    send_command(command + address + data)
-    times += 1
-    return True
-
-
-def reset_timer():
-    pass
-
-
-def time_out():
-    received_bytes.clear()
-    sm.do(Tr.TimeOut)
-
-
-while True:
-    sm.next()
+sm = VerifyFSM()
+sm.run()
