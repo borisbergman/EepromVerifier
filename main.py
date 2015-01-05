@@ -4,17 +4,18 @@ from ReadHandle import ReadFSM
 from WriteHandle import WriteFSM
 from WriteHandle import PacketSize
 import logging
-
 import sys
-import struct
 import time
 
-FORMAT = '%(asctime)-15s %(clientip)s %(user)-8s %(message)s'
-logging.basicConfig(format=FORMAT)
+appearance = "%y.%m.%d_%H.%M.%S"
 
-d = {'clientip': '192.168.0.1', 'user': 'fbloggs'}
-logger = logging.getLogger('tcpserver')
-logger.warning('Protocol problem: %s', 'connection reset', extra=d)
+logging.basicConfig(format='%(asctime)s %(message)s',
+                    filename='run{0}.log'.format(time.strftime(appearance)),
+                    filemode='w',
+                    level=logging.INFO)
+logging.warning('is when this event was logged.')
+
+runs = 2**17/PacketSize
 
 
 class St(Enum):
@@ -46,8 +47,9 @@ class VerifyFSM(object):
     def __init__(self):
         self.times = 0
         self.currentState = St.Initial
-        self.readData = []
+        self.read_data = []
         self.com = None
+        self.eeprom_file = open('eeprom{0}.bin'.format(time.strftime(appearance)), 'wb')
 
     transitions = {
         (St.Initial, Tr.SendInstall): St.InstallMode,
@@ -74,7 +76,7 @@ class VerifyFSM(object):
         if key in self.transitions:
             self.currentState = self.transitions[key]
         else:
-            print("transition {0} not found for state {1}"
+            logging.info("transition {0} not found for state {1}"
                   .format(str(transition), str(self.currentState)))
 
     def enter_installation(self):
@@ -85,23 +87,30 @@ class VerifyFSM(object):
         command = [0x14, 0x01, 0x35, 0x37, 0x39, 0x41, 0x43, 0x45]
         return self.com.send_command(command)
 
+    def write_file(self):
+        if len(self.read_data[5:-1]) < PacketSize:
+            raise Exception("Nothing received to write to file :s")
+        self.eeprom_file.write(bytes(self.read_data[5:-1]))
+        logging.info("wrote file offset:{0}".format(str(self.times * PacketSize)))
+
     def finish_state(self):
-        print('FinishState')
+        logging.info('FinishState')
+        self.eeprom_file.close()
         sys.exit(0)
 
     def initialize_state(self):
-        print('initiate state')
+        logging.info('initiate state')
         x = 0
         while x < 1:
             try:
                 inp = input("StartOnSerialPort")
                 x = int(inp) - 1
             except ValueError:
-                print("please enter a port number")
+                logging.info("please enter a port number")
         try:
             self.com = Comm(x)
         except Exception as error:
-            print(error)
+            logging.info(error)
             self.do(Tr.TimeOut)
             return
         if self.enter_installation():
@@ -110,7 +119,7 @@ class VerifyFSM(object):
             self.do(Tr.TimeOut)
 
     def install_mode_state(self):
-        print('install_mode')
+        logging.info('install_mode')
         if self.com.receive_data():
             time.sleep(5)
             if self.send_password():
@@ -118,45 +127,50 @@ class VerifyFSM(object):
             else:
                 self.do(Tr.TimeOut)
         else:
-            print("install mode fail")
+            logging.info("install mode fail")
             self.do(Tr.TimeOut)
 
     def password_mode_state(self):
-        print("password_mode")
+        logging.info("password_mode")
         if self.com.receive_data():
             self.do(Tr.Read)
         else:
-            print("password fail")
+            logging.info("password fail")
             self.do(Tr.TimeOut)
 
     def run_state(self):
-        print("run")
+        logging.info("run")
+
+        print("{0} percent complete".format(round(self.times/runs * 100)), end="\r"),
+
         if self.times * PacketSize >= 2 ** 17:
-            print("test succeed")
+            logging.info("test succeed")
+            print("\rTest Succeed")
             self.do(Tr.QueueEmpty)
             return
         read = ReadFSM(self.com, self.times * PacketSize)
         read.run()
         if read.time_out:
-            print("Timed out offset {0}".format(str(self.times * PacketSize)))
+            logging.info("Timed out offset {0}".format(str(self.times * PacketSize)))
             self.do(Tr.TimeOut)
         else:
-            self.readData = read.receivedData
+            self.read_data = read.receivedData
+            self.write_file()
             self.do(Tr.Read)
 
     def read_state(self):
-        print("read")
+        logging.info("read")
         data = [0x83 for x in range(PacketSize)]
         write = WriteFSM(self.com, self.times * PacketSize, data)
         write.run()
         if write.time_out:
-            print("Timed out offset {0}".format(str(self.times * PacketSize)))
+            logging.info("Timed out offset {0}".format(str(self.times * PacketSize)))
             self.do(Tr.TimeOut)
         else:
             self.do(Tr.Write)
 
     def written_state(self):
-        print("written")
+        logging.info("written")
         read = ReadFSM(self.com, self.times * PacketSize)
         data = [0x83 for x in range(PacketSize)]
         read.run()
@@ -167,18 +181,18 @@ class VerifyFSM(object):
             if data == read.receivedData[5:-1]:
                 self.do(Tr.Read)
             else:
-                print("Data offset: {0} received: {1}".format(
+                logging.info("Data offset: {0} received: {1}".format(
                     str(self.times * PacketSize),
                     str(to_hex(read.receivedData[5:-1]))))
                 self.do(Tr.VerifyFail)
 
     def verified_state(self):
-        print("verified")
+        logging.info("verified")
         # write back original
-        write = WriteFSM(self.com, self.times * PacketSize, self.readData)
+        write = WriteFSM(self.com, self.times * PacketSize, self.read_data[5:-1])
         write.run()
         if write.time_out:
-            print("Timed out offset {0}".format(str(self.times * PacketSize)))
+            logging.info("Timed out offset {0}".format(str(self.times * PacketSize)))
             self.do(Tr.TimeOut)
         else:
             self.do(Tr.Write)
@@ -199,8 +213,10 @@ class VerifyFSM(object):
         self.states[self.currentState](self)
 
     def run(self):
-        while self.currentState != St.Finish:
+        while True:
             self.next()
+            if self.currentState == St.Finish:
+                break
 
 
 sm = VerifyFSM()

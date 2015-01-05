@@ -1,6 +1,5 @@
 import serial
-
-
+import logging
 
 
 def checksum(arr):
@@ -26,6 +25,7 @@ class Comm(object):
             raise Exception("could not initialize port")
 
     def send_command(self, command):
+        self.flush_data()
         # source
         command.insert(0, 0x81)
         # destination last packet received from
@@ -33,16 +33,16 @@ class Comm(object):
         #amount
         command.insert(2, len(command) + 2)
 
-        #print("writing:{0}".format(str(to_hex(command))))
         try:
             self.ser.write(command + [checksum(command)])
             return True
         except serial.SerialException:
-            print("timeout after {0}s".format(str(self.timeout)))
+            logging.info("timeout after {0}s".format(str(self.timeout)))
             return False
-        #except serial.SerialTimeoutException:
-        #    print("timeout after {0}s".format(str(self.timeout)))
-        #    return False
+
+    def flush_data(self):
+        self.ser.flushOutput()
+        self.ser.flushInput()
 
     def receive_data(self):
         res = self.ser.read(4)
@@ -50,28 +50,28 @@ class Comm(object):
         self.received_bytes = res
 
         if len(self.received_bytes) <= 3:
-            print("did not receive any data while waiting")
+            logging.info("did not receive any data while waiting")
             return False
 
         expected_amount = self.received_bytes[2]
         if expected_amount > 127 or expected_amount < 5:
-            print("wrong amount of bytes:" + str(expected_amount))
+            logging.info("wrong amount of bytes:" + str(expected_amount))
             return False
 
         res = self.ser.read(expected_amount - 4)
         self.received_bytes += res
 
         if len(self.received_bytes) != expected_amount:
-            print("incorrect amount expected: %s actual %s" %
+            logging.info("incorrect amount expected: %s actual %s" %
                   (str(expected_amount), str(len(self.received_bytes))))
             return False
 
         if self.received_bytes[-1] != checksum(self.received_bytes[:-1]):
-            print("incorrect checksum, got: {0} calculated: {1} ".format(
+            logging.info("incorrect checksum, got: {0} calculated: {1} ".format(
                 str(self.received_bytes[-1]),
                 str(checksum(self.received_bytes[:-1]))))
             return False
 
         self.unitId = self.received_bytes[0]
-        #print("received set {0}", to_hex(self.received_bytes))
+        #logging.info("received set {0}", to_hex(self.received_bytes))
         return True

@@ -4,6 +4,8 @@ from WriteHandle import PacketSize
 import struct
 
 
+
+
 class St(Enum):
     Read1 = 0
     Wait1 = 1
@@ -34,21 +36,27 @@ class ReadFSM(object):
     }
 
     def perform_read(self):
-        print("read offset: {0}".format(self.offSet))
+        logging.info("read offset: {0}".format(self.offSet))
         command = [0x10, 0x06]
         address = [x for x in struct.pack('i', self.offSet)[::-1]]
         return self.comm.send_command(command + address + [PacketSize])
+
+    def check_feedback(self):
+        if [x for x in self.comm.received_bytes[3:5]] != [0x12, 0x0E]:
+            logging.info("unexpected feedback: {0}".format(str(to_hex(self.comm.received_bytes))))
+            return False
+        return True
 
     def do(self, transition):
         key = (self.currentState, transition)
         if key in self.transitions:
             self.currentState = self.transitions[key]
         else:
-            print("transition {0} not found for state {1}"
+            logging.info("transition {0} not found for state {1}"
                   .format(str(transition), str(self.currentState)))
 
     def read1_state(self):
-        print("read1")
+        logging.info("read1")
         if self.perform_read():
             self.do(Tr.Read)
         else:
@@ -56,23 +64,23 @@ class ReadFSM(object):
             self.do(Tr.TimeOut)
 
     def wait1_state(self):
-        print("WaitRead1")
-        if self.comm.receive_data():
+        logging.info("WaitRead1")
+        if self.comm.receive_data() and self.check_feedback():
             self.time_out = False
             self.do(Tr.Received)
         else:
             self.do(Tr.TimeOut)
 
     def wait2_state(self):
-        print("ReadWait2")
-        if self.comm.receive_data():
+        logging.info("ReadWait2")
+        if self.comm.receive_data() and self.check_feedback():
             self.time_out = False
             self.do(Tr.Received)
         else:
             self.do(Tr.TimeOut)
 
     def read2_state(self):
-        print("Read2")
+        logging.info("Read2")
         if self.perform_read():
             self.do(Tr.Read)
         else:
@@ -80,9 +88,9 @@ class ReadFSM(object):
             self.do(Tr.TimeOut)
 
     def fail_state(self):
-        print("ReadFail")
+        logging.info("ReadFail")
         self.time_out = True
-        print("failed 2x")
+        logging.info("failed 2x")
         self.do(Tr.Stop)
 
     states = {
